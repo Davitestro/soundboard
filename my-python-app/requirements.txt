@@ -1,0 +1,4 @@
+customtkinter
+pydub
+sounddevice
+numpy
