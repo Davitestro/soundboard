@@ -11,6 +11,15 @@ ctk.set_appearance_mode("System")
 ctk.set_default_color_theme("blue")
 SOUNDS_FILE = "sounds.json"
 
+# Добавляем опциональную поддержку системного трея
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    _HAS_PYSTRAY = True
+except Exception:
+    _HAS_PYSTRAY = False
+    print("pystray/Pillow not installed. To enable tray icon run: pip install pystray pillow")
+
 class SoundboardApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -80,6 +89,12 @@ class SoundboardApp(ctk.CTk):
         self._refresh_devices()
         self._start_mic_stream()
         self._start_playback_stream()
+
+        # Tray support
+        self._tray_icon = None
+        self._tray_thread = None
+        # Перехватываем закрытие окна — будем скрывать вместо выхода
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ----------- Загрузка файлов -----------
     def load_files(self):
@@ -288,6 +303,97 @@ class SoundboardApp(ctk.CTk):
                     print(f"File not found, skipping: {path}")
         except Exception as e:
             print(f"Error loading sounds.json: {e}")
+
+    # ----------- Трей (системный лоток) -----------
+    def _create_tray_icon(self):
+        if not _HAS_PYSTRAY:
+            return None
+        # простая иконка: круг с буквой S
+        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((8, 8, 56, 56), fill=(30, 144, 255, 255))
+        # текст может быть несовершенным без шрифта, но обычно проходит
+        draw.text((20, 18), "S", fill=(255, 255, 255, 255))
+        menu = pystray.Menu(
+            pystray.MenuItem("Show", lambda icon, item: self.after(0, self._show_window)),
+            pystray.MenuItem("Exit", lambda icon, item: self.after(0, self._exit_app))
+        )
+        icon = pystray.Icon("soundboard", image, "Soundboard", menu)
+        return icon
+
+    def _start_tray(self):
+        if not _HAS_PYSTRAY or self._tray_icon is not None:
+            return
+        self._tray_icon = self._create_tray_icon()
+        if not self._tray_icon:
+            return
+        # Запускаем pystray в отдельном потоке — run блокирует
+        self._tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True)
+        self._tray_thread.start()
+
+    def _show_window(self):
+        # Останавливаем трей-иконку если запущена
+        if self._tray_icon:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+        # Показываем окно
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _on_close(self):
+        # Скрываем окно в трей
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        if _HAS_PYSTRAY:
+            self._start_tray()
+        else:
+            print("App hidden (no tray support). Install pystray and pillow to enable tray icon.")
+
+    def _exit_app(self):
+        # Остановка стримов и очищение трея, затем завершение приложения
+        try:
+            if hasattr(self, "mic_stream") and self.mic_stream is not None:
+                try:
+                    self.mic_stream.stop()
+                    self.mic_stream.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "playback_stream") and self.playback_stream is not None:
+                try:
+                    self.playback_stream.stop()
+                    self.playback_stream.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        # Удаляем иконку трея
+        if self._tray_icon:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+            self._tray_icon = None
+        # Закрываем GUI
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
